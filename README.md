@@ -1,3 +1,7 @@
+# Incompatibility Warning:
+This library is an incompatible fork of [EchoTeam/mcd](http://github.com/EchoTeam/mcd/) with very minor changes, designed to play well in a heterogeneous environment where multiple languages are reading and writing to memcache. It only handles binaries as keys and values and sets them in memcache unchanged, all encoding of keys and values is up to you. This library's dependecies have also been updated to use a more modern version of lager. 
+
+Now on to the regularly scheduled docs.
 
 # Erlang memcached client library.
 

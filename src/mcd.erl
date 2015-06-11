@@ -1,4 +1,4 @@
-%%% 
+%%%
 %%% This module uses memcached protocol to interface memcached daemon:
 %%% http://code.sixapart.com/svn/memcached/trunk/server/doc/protocol.txt
 %%%
@@ -44,7 +44,7 @@
 %%%   Value: int()>=0
 %%%   Time: int()>=0
 %%%   Reason: noconn | notfound | notstored | overload | timeout | noproc | all_nodes_down
-%%% 
+%%%
 -module(mcd).
 -behavior(gen_server).
 
@@ -317,7 +317,7 @@ unload_connection(ServerRef) ->
 % gen_server callbacks
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--record(state, { 
+-record(state, {
 	address, port = 11211, socket = nosocket,
 	receiver,		% data receiver process
 	requests = 0,		% client requests received
@@ -549,7 +549,7 @@ reconnect(#state{address = Address, port = Port, socket = OldSock} = State) ->
 
 	NewAnomalies = case is_atom(State#state.status) of
 		false -> State#state.anomalies;
-		true -> 
+		true ->
 			reportEvent(State, state, down),
 			incrAnomaly(State#state.anomalies, reconnects)
 	end,
@@ -641,7 +641,7 @@ do_forwarder(Method, ServerRef, Req) ->
 		% into to an Erlang term. It's better to do it in the requester
 		% process space to avoid inter-process copying of potentially
 		% complex data structures.
-		{ok, {'$value_blob', B}} -> {ok, binary_to_term(B)};
+		{ok, {'$value_blob', B}} -> {ok, B};
 
 		Response -> Response
 	catch
@@ -650,12 +650,6 @@ do_forwarder(Method, ServerRef, Req) ->
 		exit:{noproc, {gen_server, call, _}} ->
 			{error, noproc}
 	end.
-
-%% Convert arbitrary Erlang term into memcached key
-%% @spec md5(term()) -> binary()
-%% @spec b64(binary()) -> binary()
-md5(Key) -> erlang:md5(term_to_binary(Key)).
-b64(Key) -> base64:encode(Key).
 
 %% Translate a query tuple into memcached protocol string and the
 %% atom suggesting a procedure for parsing memcached server response.
@@ -677,23 +671,19 @@ constructMemcachedQuery({replace, Key, Data}) ->
 constructMemcachedQuery({replace, Key, Data, Flags, Expiration}) ->
 	constructMemcachedQueryCmd("replace", Key, Data, Flags, Expiration);
 constructMemcachedQuery({get, Key}) ->
-	MD5Key = md5(Key),
-	{MD5Key, ["get ", b64(MD5Key), "\r\n"], rtGet};
+	{Key, ["get ", Key, "\r\n"], rtGet};
 % <BC>
 constructMemcachedQuery({delete, Key, _}) ->
 	constructMemcachedQuery({delete, Key});
 % </BC>
 constructMemcachedQuery({delete, Key}) ->
-	MD5Key = md5(Key),
-	{MD5Key, ["delete ", b64(MD5Key), "\r\n"], rtDel};
+	{Key, ["delete ", Key, "\r\n"], rtDel};
 constructMemcachedQuery({incr, Key, Value})
 		when is_integer(Value), Value >= 0 ->
-	MD5Key = md5(Key),
-	{MD5Key, ["incr ", b64(MD5Key), " ", integer_to_list(Value), "\r\n"], rtInt};
+	{Key, ["incr ", Key, " ", integer_to_list(Value), "\r\n"], rtInt};
 constructMemcachedQuery({decr, Key, Value})
 		when is_integer(Value), Value >= 0 ->
-	MD5Key = md5(Key),
-	{MD5Key, ["decr ", b64(MD5Key), " ", integer_to_list(Value), "\r\n"], rtInt};
+	{Key, ["decr ", Key, " ", integer_to_list(Value), "\r\n"], rtInt};
 constructMemcachedQuery({flush_all, Expiration})
 		when is_integer(Expiration), Expiration >= 0 ->
 	{<<>>, ["flush_all ", integer_to_list(Expiration), "\r\n"], rtFlush};
@@ -712,9 +702,8 @@ constructMemcachedQueryCmd(Cmd, Key, Data) ->
 constructMemcachedQueryCmd(Cmd, Key, Data, Flags, Exptime)
 	when is_list(Cmd), is_integer(Flags), is_integer(Exptime),
 	Flags >= 0, Flags < 65536, Exptime >= 0 ->
-	BinData = term_to_binary(Data),
-	MD5Key = md5(Key),
-	{MD5Key, [Cmd, " ", b64(MD5Key), " ", integer_to_list(Flags), " ",
+	BinData = Data,
+	{Key, [Cmd, " ", Key, " ", integer_to_list(Flags), " ",
 		integer_to_list(Exptime), " ",
 		integer_to_list(size(BinData)),
 		"\r\n", BinData, "\r\n"], rtCmd}.
@@ -768,7 +757,7 @@ data_receiver_accept_response(rtGet, ExpFlags, Socket) ->
 		ok = inet:setopts(Socket, [{packet, line}]),
 		case proplists:get_value(raw_blob, ExpFlags) of
 			true -> {ok, {'$value_blob', Bin}};
-			_ -> {ok, binary_to_term(Bin)}
+			_ -> {ok, Bin}
 		end
 	end;
 data_receiver_accept_response(rtInt, _, Socket) ->
@@ -807,4 +796,3 @@ data_receiver_error_reason(<<"CLIENT_ERROR ", Reason/binary>>) ->
 
 data_receiver_error_reason(Code, Reason) ->
 	{error, {Code, [C || C <- binary_to_list(Reason), C >= $ ]}}.
-
