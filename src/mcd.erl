@@ -56,6 +56,7 @@
 % </BC>
 -export([
 	get/2,
+  multiGet/2,
 	set/3,
 	set/4,
 	set/5,
@@ -213,6 +214,9 @@ ldo(set, Key, Data, Flag, Expires) ->
 %% These helper functions provide more self-evident API.
 -spec get(ServerRef :: server(), Key :: term()) -> get_result().
 get(ServerRef, Key) -> do(ServerRef, get, Key).
+
+-spec multiGet(ServerRef :: server(), Keys :: [term()]) -> get_result().
+multiGet(ServerRef, Keys) -> do(ServerRef, multi_get, Keys).
 
 -spec set(ServerRef :: server(), Key :: term(), Data :: term()) -> set_result().
 set(ServerRef, Key, Data) -> do(ServerRef, set, Key, Data).
@@ -626,30 +630,33 @@ constructAndSendQuery(From, Query, Socket, {RcvrPid, _}) ->
 %% or cast a message asynchronously, without waiting for the result.
 %%
 do_forwarder(Method, ServerRef, Req) ->
-	{KeyMD5, IOL, T} = constructMemcachedQuery(Req),
-	Q = iolist_to_binary(IOL),
-	try gen_server:Method(ServerRef,
-			{'$constructed_query', KeyMD5, {Q, T, [raw_blob]}}) of
+  case constructMemcachedQuery(Req) of
+    {error, bad_arg} -> {error, bad_arg};
+    {KeyMD5, IOL, T} ->
+      Q = iolist_to_binary(IOL),
+      try gen_server:Method(ServerRef,
+        {'$constructed_query', KeyMD5, {Q, T, [raw_blob]}}) of
 
-		% Return the actual Data piece which got stored on the
-		% server. Since returning Data happens inside the single
-		% process, this has no copying overhead and is nicer than
-		% returning {ok, stored} to successful set/add/replace commands.
-		{ok, stored} when T == rtCmd -> {ok, element(3, Req)};
+        % Return the actual Data piece which got stored on the
+        % server. Since returning Data happens inside the single
+        % process, this has no copying overhead and is nicer than
+        % returning {ok, stored} to successful set/add/replace commands.
+        {ok, stored} when T == rtCmd -> {ok, element(3, Req)};
 
-		% Memcached returns a blob which needs to be converted
-		% into to an Erlang term. It's better to do it in the requester
-		% process space to avoid inter-process copying of potentially
-		% complex data structures.
-		{ok, {'$value_blob', B}} -> {ok, B};
+        % Memcached returns a blob which needs to be converted
+        % into to an Erlang term. It's better to do it in the requester
+        % process space to avoid inter-process copying of potentially
+        % complex data structures.
+        {ok, {'$value_blob', B}} -> {ok, B};
 
-		Response -> Response
-	catch
-		exit:{timeout, {gen_server, call, _}} ->
-			{error, timeout};
-		exit:{noproc, {gen_server, call, _}} ->
-			{error, noproc}
-	end.
+        Response -> Response
+      catch
+        exit:{timeout, {gen_server, call, _}} ->
+          {error, timeout};
+        exit:{noproc, {gen_server, call, _}} ->
+          {error, noproc}
+      end
+  end.
 
 %% Translate a query tuple into memcached protocol string and the
 %% atom suggesting a procedure for parsing memcached server response.
@@ -671,7 +678,13 @@ constructMemcachedQuery({replace, Key, Data}) ->
 constructMemcachedQuery({replace, Key, Data, Flags, Expiration}) ->
 	constructMemcachedQueryCmd("replace", Key, Data, Flags, Expiration);
 constructMemcachedQuery({get, Key}) ->
-	{Key, ["get ", Key, "\r\n"], rtGet};
+  case parseToBinaryIfPossbile(Key) of
+    error -> {error, bad_arg};
+    BinaryKey -> {BinaryKey, ["get ", BinaryKey, "\r\n"], rtGet}
+  end;
+constructMemcachedQuery({multi_get, Keys}) ->
+  JoinedKeys = binaryJoin(Keys, <<" ">>),
+  {JoinedKeys, ["get ", JoinedKeys, "\r\n"], rtMultiGet};
 % <BC>
 constructMemcachedQuery({delete, Key, _}) ->
 	constructMemcachedQuery({delete, Key});
@@ -702,11 +715,40 @@ constructMemcachedQueryCmd(Cmd, Key, Data) ->
 constructMemcachedQueryCmd(Cmd, Key, Data, Flags, Exptime)
 	when is_list(Cmd), is_integer(Flags), is_integer(Exptime),
 	Flags >= 0, Flags < 65536, Exptime >= 0 ->
-	BinData = Data,
-	{Key, [Cmd, " ", Key, " ", integer_to_list(Flags), " ",
-		integer_to_list(Exptime), " ",
-		integer_to_list(size(BinData)),
-		"\r\n", BinData, "\r\n"], rtCmd}.
+  case parseToBinaryIfPossbile(Key) of
+    error -> {error, bad_arg};
+    BinaryKey ->
+      case parseToBinaryIfPossbile(Data) of
+        error -> {error, bad_arg};
+        BinData ->
+          {Key, [Cmd, " ", BinaryKey, " ", integer_to_list(Flags), " ", integer_to_list(Exptime),
+            " ", integer_to_list(size(BinData)),
+            "\r\n", BinData, "\r\n"
+          ], rtCmd}
+      end
+  end.
+
+parseToBinaryIfPossbile(Data) ->
+  if
+    is_binary(Data) -> Data;
+    is_list(Data) -> list_to_binary(Data);
+    is_integer(Data) -> integer_to_binary(Data);
+    is_atom(Data) -> atom_to_binary(Data, utf8);
+    true ->
+      error_logger:error_msg("Failed to parse ~60p to binary", [Data]),
+      error
+  end.
+
+-spec binaryJoin([binary()], binary()) -> binary().
+binaryJoin([], _Sep) ->
+  <<>>;
+binaryJoin([SinglePart], _Sep) ->
+  SinglePart;
+binaryJoin([Head|Tail], Sep) ->
+  case parseToBinaryIfPossbile(Head) of
+    error -> <<>>;
+    BinaryHead -> lists:foldl(fun (Value, Acc) -> <<Acc/binary, Sep/binary, Value/binary>> end, BinaryHead, Tail)
+  end.
 
 replyBack(anon, _) -> true;
 replyBack(From, Result) -> gen_server:reply(From, Result).
@@ -743,23 +785,20 @@ data_receiver_accept_response(rtVer, _, Socket) ->
 		_ -> data_receiver_error_reason(Response)
 	end;
 data_receiver_accept_response(rtGet, ExpFlags, Socket) ->
-	{ok, HeaderLine} = gen_tcp:recv(Socket, 0),
-	case HeaderLine of
-	  % Quick test before embarking on tokenizing
-	  <<"END\r\n">> -> {error, notfound};
-	  <<"SERVER_ERROR ",_/binary>> -> {error, notfound};
-	  _ ->
-		["VALUE", _Value, _Flag, DataSizeStr]
-			= string:tokens(binary_to_list(HeaderLine), " \r\n"),
-		ok = inet:setopts(Socket, [{packet, raw}]),
-		Bin = data_receive_binary(Socket, list_to_integer(DataSizeStr)),
-		<<"\r\nEND\r\n">> = data_receive_binary(Socket, 7),
-		ok = inet:setopts(Socket, [{packet, line}]),
-		case proplists:get_value(raw_blob, ExpFlags) of
-			true -> {ok, {'$value_blob', Bin}};
-			_ -> {ok, Bin}
-		end
-	end;
+  case retrieve_one_get_result(ExpFlags, Socket, single) of
+    response_end -> {error, notfound};
+    response_notfound -> {error, notfound};
+    {ok, {'$value_blob', {_Key, Val}}} -> {ok, {'$value_blob', Val}};
+    {ok, {_Key, Val}} -> {ok, Val}
+  end;
+data_receiver_accept_response(rtMultiGet, ExpFlags, Socket) ->
+  case multi_get_helper(ExpFlags, Socket, []) of
+    {error, notfound} -> {error, notfound};
+    [] -> {error, notfound};
+    %% Since we prepend each element in multi_get_helper, we need to do a reverse here to make sure that the values
+    %% returned are align with the keys in the request
+    Vals -> {ok, lists:reverse(Vals)}
+  end;
 data_receiver_accept_response(rtInt, _, Socket) ->
 	{ok, Response} = gen_tcp:recv(Socket, 0),
 	case string:to_integer(binary_to_list(Response)) of
@@ -796,3 +835,36 @@ data_receiver_error_reason(<<"CLIENT_ERROR ", Reason/binary>>) ->
 
 data_receiver_error_reason(Code, Reason) ->
 	{error, {Code, [C || C <- binary_to_list(Reason), C >= $ ]}}.
+
+retrieve_one_get_result(ExpFlags, Socket, Flag) ->
+  {ok, HeaderLine} = gen_tcp:recv(Socket, 0),
+  case HeaderLine of
+  % Quick test before embarking on tokenizing
+    <<"END\r\n">> -> response_end;
+    <<"SERVER_ERROR ",_/binary>> -> response_notfound;
+    _ ->
+      ["VALUE", Key, _Flag, DataSizeStr]
+        = string:tokens(binary_to_list(HeaderLine), " \r\n"),
+      ok = inet:setopts(Socket, [{packet, raw}]),
+      Bin = data_receive_binary(Socket, list_to_integer(DataSizeStr)),
+      % Read out other useless bytes
+      case Flag of
+        single ->
+          <<"\r\nEND\r\n">> = data_receive_binary(Socket, 7);
+        multi ->
+          <<"\r\n">> = data_receive_binary(Socket, 2)
+      end,
+      ok = inet:setopts(Socket, [{packet, line}]),
+      case proplists:get_value(raw_blob, ExpFlags) of
+        true -> {ok, {'$value_blob', {list_to_binary(Key), Bin}}};
+        _ -> {ok, {list_to_binary(Key), Bin}}
+      end
+  end.
+
+multi_get_helper(ExpFlags, Socket, CurrentResult) ->
+  case retrieve_one_get_result(ExpFlags, Socket, multi) of
+    response_end -> CurrentResult;
+    response_notfound -> {error, notfound};
+    {ok, {'$value_blob', {Key, Val}}} -> multi_get_helper(ExpFlags, Socket, [{Key, Val}|CurrentResult]);
+    {ok, {Key, Val}} -> multi_get_helper(ExpFlags, Socket, [{Key, Val}|CurrentResult])
+  end.
