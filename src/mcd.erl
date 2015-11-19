@@ -56,7 +56,7 @@
 % </BC>
 -export([
 	get/2,
-  multiGet/2,
+  get_multi/2,
 	set/3,
 	set/4,
 	set/5,
@@ -215,8 +215,8 @@ ldo(set, Key, Data, Flag, Expires) ->
 -spec get(ServerRef :: server(), Key :: term()) -> get_result().
 get(ServerRef, Key) -> do(ServerRef, get, Key).
 
--spec multiGet(ServerRef :: server(), Keys :: [term()]) -> get_result().
-multiGet(ServerRef, Keys) -> do(ServerRef, multi_get, Keys).
+-spec get_multi(ServerRef :: server(), Keys :: [term()]) -> get_result().
+get_multi(ServerRef, Keys) -> do(ServerRef, multi_get, Keys).
 
 -spec set(ServerRef :: server(), Key :: term(), Data :: term()) -> set_result().
 set(ServerRef, Key, Data) -> do(ServerRef, set, Key, Data).
@@ -359,9 +359,9 @@ handle_call(status, _From, State) ->
 	State};
 handle_call({set_monitor, MonitorPid, Items}, _From, #state{monitored_by=CurMons} = State) ->
 	MonRef = erlang:monitor(process, MonitorPid),
-	NewMons = addMonitorPidItems(demonitorPid(CurMons, MonitorPid),
+	NewMons = add_monitor_pid_items(demonitor_pid(CurMons, MonitorPid),
 			MonitorPid, MonRef, Items),
-	MonitoredItemsForPid = collectMonitoredItems(NewMons, MonitorPid),
+	MonitoredItemsForPid = collect_monitored_items(NewMons, MonitorPid),
 	case MonitoredItemsForPid of
 		[] -> erlang:demonitor(MonRef);
 		_ -> ok
@@ -385,7 +385,7 @@ handle_call(unload_connection, _From, #state{outstanding = QOut, address = ?UNKN
 handle_call(unload_connection, _From, #state{} = State) ->
     {reply, {error, not_overloaded}, State};
 
-handle_call(Query, From, State) -> {noreply, scheduleQuery(State, Query, From)}.
+handle_call(Query, From, State) -> {noreply, schedule_query(State, Query, From)}.
 
 % <BC>
 handle_cast(restart_receiver, #state{socket = Socket, receiver = {Pid, MonRef}} = State) ->
@@ -414,7 +414,7 @@ handle_cast({connected, Pid, NewSocket},
 	ReqId = State#state.requests,
 
 	% We ask for version information, which will set our status to ready
-	{Socket, NewStatus} = case constructAndSendQuery(
+	{Socket, NewStatus} = case construct_and_send_query(
 				{self(), {connection_tested, NewSocket}},
 				{version},
 				NewSocket, State#state.receiver) of
@@ -437,11 +437,11 @@ handle_cast({connected, _, nosocket}, State) -> {noreply, State};
 handle_cast({connected, _, Socket}, State) ->
 	gen_tcp:close(Socket),
 	{noreply, State};
-handle_cast(Query, State) -> {noreply, scheduleQuery(State, Query, anon)}.
+handle_cast(Query, State) -> {noreply, schedule_query(State, Query, anon)}.
 
 handle_info({request_served, Socket}, #state{socket=Socket, outstanding=QOut}=State) -> {noreply, State#state{outstanding=QOut - 1}};
 handle_info({{connection_tested, Socket}, {ok, _Version}}, #state{socket = Socket, status = {testing, _}} = State) ->
-	reportEvent(State, state, up),
+	report_event(State, state, up),
 	{noreply, State#state{status = ready}};
 handle_info({timeout, _, {may, reconnect}}, State) -> {noreply, reconnect(State)};
 handle_info({tcp_closed, Socket}, #state{socket = Socket} = State) ->
@@ -456,7 +456,7 @@ handle_info({'DOWN', MonRef, process, Pid, _Info} = Info, #state{receiver={Pid,M
 
 handle_info({'DOWN', MonRef, process, Pid, _Info}, #state{monitored_by=Mons}=State) ->
 	{noreply, State#state{
-		monitored_by = removeMonitorPidAndMonRef(Mons, Pid, MonRef)
+		monitored_by = remove_monitor_pid_and_ref(Mons, Pid, MonRef)
 		} };
 handle_info(_Info, State) ->
 	io:format("Some info: ~p~n", [_Info]),
@@ -471,7 +471,7 @@ terminate(_Reason, _State) -> ok.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 % Remove the specified pid from the lists of nodes monitoring this gen_server.
-demonitorPid(Monitors, MonitorPid) ->
+demonitor_pid(Monitors, MonitorPid) ->
 	[{Item, NewPids}
 		|| {Item, PidRefs} <- Monitors,
 		   NewPids <- [[PM || {P, MonRef} = PM <- PidRefs,
@@ -480,7 +480,7 @@ demonitorPid(Monitors, MonitorPid) ->
 		   NewPids /= []
 	].
 
-removeMonitorPidAndMonRef(Monitors, Pid, MonRef) ->
+remove_monitor_pid_and_ref(Monitors, Pid, MonRef) ->
 	[{Item, NewPids}
 		|| {Item, PidRefs} <- Monitors,
 		   NewPids <- [[PM || {P, MR} = PM <- PidRefs,
@@ -489,12 +489,12 @@ removeMonitorPidAndMonRef(Monitors, Pid, MonRef) ->
 	].
 
 % Add the specified pid to the lists of nodes monitoring this gen_server.
-addMonitorPidItems(Monitors, MonitorPid, MonRef, Items) ->
+add_monitor_pid_items(Monitors, MonitorPid, MonRef, Items) ->
 	lists:foldl(fun(Item, M) ->
-		addMonitorPidItem(M, MonitorPid, MonRef, Item)
+		add_monitor_pid_item(M, MonitorPid, MonRef, Item)
 	end, Monitors, Items).
 
-addMonitorPidItem(Monitors, Pid, MonRef, I) when I == state; I == overload ->
+add_monitor_pid_item(Monitors, Pid, MonRef, I) when I == state; I == overload ->
 	NewMons = [{Item, NewPids}
 		|| {Item, Pids} <- Monitors,
 		   NewPids <- [case Item of
@@ -506,26 +506,26 @@ addMonitorPidItem(Monitors, Pid, MonRef, I) when I == state; I == overload ->
 		false -> [{I, [{Pid, MonRef}]}|NewMons];
 		{value, _} -> NewMons
 	end;
-addMonitorPidItem(Monitors, _Pid, _MonRef, _Item) -> Monitors.
+add_monitor_pid_item(Monitors, _Pid, _MonRef, _Item) -> Monitors.
 
-reportEvent(#state{monitored_by = Mons} = State, Event, Info) ->
+report_event(#state{monitored_by = Mons} = State, Event, Info) ->
 	[P ! {memcached, self(), Event, Info}
 		|| {Item, Pids} <- Mons, Item == Event, {P, _} <- Pids],
 	State.
 
 % Figure out what items this pid monitors.
-collectMonitoredItems(Monitors, MonitorPid) ->
+collect_monitored_items(Monitors, MonitorPid) ->
 	[Item || {Item, Pids} <- Monitors,
 		lists:keysearch(MonitorPid, 1, Pids) /= false].
 
 % @spec utime(now()) -> int()
 utime({Mega, Secs, _}) -> 1000000 * Mega + Secs.
 
-incrAnomaly({QOverloads, Reconnects, Unused}, overloads) ->
+incr_anomaly({QOverloads, Reconnects, Unused}, overloads) ->
 	{QOverloads + 1, Reconnects, Unused};
-incrAnomaly({QOverloads, Reconnects, Unused}, reconnects) ->
+incr_anomaly({QOverloads, Reconnects, Unused}, reconnects) ->
 	{QOverloads, Reconnects + 1, Unused};
-incrAnomaly(Anomaly, FieldName) ->
+incr_anomaly(Anomaly, FieldName) ->
 	error_logger:error_msg("Anomaly ~p couldn't be increased in ~p~n",
 		[FieldName, Anomaly]),
 	Anomaly.
@@ -554,8 +554,8 @@ reconnect(#state{address = Address, port = Port, socket = OldSock} = State) ->
 	NewAnomalies = case is_atom(State#state.status) of
 		false -> State#state.anomalies;
 		true ->
-			reportEvent(State, state, down),
-			incrAnomaly(State#state.anomalies, reconnects)
+			report_event(State, state, down),
+			incr_anomaly(State#state.anomalies, reconnects)
 	end,
 
 	State#state { socket = nosocket,
@@ -600,28 +600,28 @@ reconnector_process(MCDServerPid, Address, Port) ->
 %% lagging memcached processes.
 %%
 
-scheduleQuery(#state{requests = QTotal, outstanding = QOut, receiver = Rcvr, socket = Socket, status = ready} = State, Query, From) when QOut < ?MAX_OUTSTANDING_REQUESTS ->
-	case constructAndSendQuery(From, Query, Socket, Rcvr) of
+schedule_query(#state{requests = QTotal, outstanding = QOut, receiver = Rcvr, socket = Socket, status = ready} = State, Query, From) when QOut < ?MAX_OUTSTANDING_REQUESTS ->
+	case construct_and_send_query(From, Query, Socket, Rcvr) of
 		ok -> State#state{requests = QTotal+1, outstanding = QOut+1};
 		{error, _Reason} -> reconnect(State)
 	end;
-scheduleQuery(State, _Query, From) ->
+schedule_query(State, _Query, From) ->
 	#state{outstanding = QOut, anomalies = An, status = Status} = State,
 	if
 		QOut >= ?MAX_OUTSTANDING_REQUESTS ->
-			replyBack(From, {error, overload}),
-			reportEvent(State, overload, []),
-			State#state{anomalies = incrAnomaly(An, overloads)};
+			reply_back(From, {error, overload}),
+			report_event(State, overload, []),
+			State#state{anomalies = incr_anomaly(An, overloads)};
 		Status =/= ready ->
-			replyBack(From, {error, noconn}),
+			reply_back(From, {error, noconn}),
 			State
 	end.
 
-constructAndSendQuery(From, {'$constructed_query', _KeyMD5, {OTARequest, ReqType, ExpectationFlags}}, Socket, {RcvrPid, _}) ->
+construct_and_send_query(From, {'$constructed_query', _KeyMD5, {OTARequest, ReqType, ExpectationFlags}}, Socket, {RcvrPid, _}) ->
 	RcvrPid ! {accept_response, From, ReqType, ExpectationFlags},
 	gen_tcp:send(Socket, OTARequest);
-constructAndSendQuery(From, Query, Socket, {RcvrPid, _}) ->
-	{_MD5Key, OTARequest, ReqType} = constructMemcachedQuery(Query),
+construct_and_send_query(From, Query, Socket, {RcvrPid, _}) ->
+	{_MD5Key, OTARequest, ReqType} = construct_memcached_query(Query),
 	RcvrPid ! {accept_response, From, ReqType, []},
 	gen_tcp:send(Socket, OTARequest).
 
@@ -630,7 +630,7 @@ constructAndSendQuery(From, Query, Socket, {RcvrPid, _}) ->
 %% or cast a message asynchronously, without waiting for the result.
 %%
 do_forwarder(Method, ServerRef, Req) ->
-  case constructMemcachedQuery(Req) of
+  case construct_memcached_query(Req) of
     {error, bad_arg} -> {error, bad_arg};
     {KeyMD5, IOL, T} ->
       Q = iolist_to_binary(IOL),
@@ -661,64 +661,64 @@ do_forwarder(Method, ServerRef, Req) ->
 %% Translate a query tuple into memcached protocol string and the
 %% atom suggesting a procedure for parsing memcached server response.
 %%
-%% @spec constructMemcachedQuery(term()) -> {md5(), iolist(), ResponseKind}
+%% @spec construct_memcached_query(term()) -> {md5(), iolist(), ResponseKind}
 %% Type ResponseKind = atom()
 %%
-constructMemcachedQuery({version}) -> {<<>>, [<<"version\r\n">>], rtVer};
-constructMemcachedQuery({set, Key, Data}) ->
-	constructMemcachedQueryCmd("set", Key, Data);
-constructMemcachedQuery({set, Key, Data, Flags, Expiration}) ->
-	constructMemcachedQueryCmd("set", Key, Data, Flags, Expiration);
-constructMemcachedQuery({add, Key, Data}) ->
-	constructMemcachedQueryCmd("add", Key, Data);
-constructMemcachedQuery({add, Key, Data, Flags, Expiration}) ->
-	constructMemcachedQueryCmd("add", Key, Data, Flags, Expiration);
-constructMemcachedQuery({replace, Key, Data}) ->
-	constructMemcachedQueryCmd("replace", Key, Data);
-constructMemcachedQuery({replace, Key, Data, Flags, Expiration}) ->
-	constructMemcachedQueryCmd("replace", Key, Data, Flags, Expiration);
-constructMemcachedQuery({get, Key}) ->
-  case parseToBinaryIfPossbile(Key) of
+construct_memcached_query({version}) -> {<<>>, [<<"version\r\n">>], rtVer};
+construct_memcached_query({set, Key, Data}) ->
+	construct_memcached_query_cmd("set", Key, Data);
+construct_memcached_query({set, Key, Data, Flags, Expiration}) ->
+	construct_memcached_query_cmd("set", Key, Data, Flags, Expiration);
+construct_memcached_query({add, Key, Data}) ->
+	construct_memcached_query_cmd("add", Key, Data);
+construct_memcached_query({add, Key, Data, Flags, Expiration}) ->
+	construct_memcached_query_cmd("add", Key, Data, Flags, Expiration);
+construct_memcached_query({replace, Key, Data}) ->
+	construct_memcached_query_cmd("replace", Key, Data);
+construct_memcached_query({replace, Key, Data, Flags, Expiration}) ->
+	construct_memcached_query_cmd("replace", Key, Data, Flags, Expiration);
+construct_memcached_query({get, Key}) ->
+  case parse_to_binary_if_possible(Key) of
     error -> {error, bad_arg};
     BinaryKey -> {BinaryKey, ["get ", BinaryKey, "\r\n"], rtGet}
   end;
-constructMemcachedQuery({multi_get, Keys}) ->
-  JoinedKeys = binaryJoin(Keys, <<" ">>),
+construct_memcached_query({multi_get, Keys}) ->
+  JoinedKeys = binary_join(Keys, <<" ">>, <<>>),
   {JoinedKeys, ["get ", JoinedKeys, "\r\n"], rtMultiGet};
 % <BC>
-constructMemcachedQuery({delete, Key, _}) ->
-	constructMemcachedQuery({delete, Key});
+construct_memcached_query({delete, Key, _}) ->
+	construct_memcached_query({delete, Key});
 % </BC>
-constructMemcachedQuery({delete, Key}) ->
+construct_memcached_query({delete, Key}) ->
 	{Key, ["delete ", Key, "\r\n"], rtDel};
-constructMemcachedQuery({incr, Key, Value})
+construct_memcached_query({incr, Key, Value})
 		when is_integer(Value), Value >= 0 ->
 	{Key, ["incr ", Key, " ", integer_to_list(Value), "\r\n"], rtInt};
-constructMemcachedQuery({decr, Key, Value})
+construct_memcached_query({decr, Key, Value})
 		when is_integer(Value), Value >= 0 ->
 	{Key, ["decr ", Key, " ", integer_to_list(Value), "\r\n"], rtInt};
-constructMemcachedQuery({flush_all, Expiration})
+construct_memcached_query({flush_all, Expiration})
 		when is_integer(Expiration), Expiration >= 0 ->
 	{<<>>, ["flush_all ", integer_to_list(Expiration), "\r\n"], rtFlush};
-constructMemcachedQuery({flush_all}) -> {<<>>, ["flush_all\r\n"], rtFlush}.
+construct_memcached_query({flush_all}) -> {<<>>, ["flush_all\r\n"], rtFlush}.
 
 %% The "set", "add" and "replace" queries do get optional
 %% "flag" and "expiration time" attributes. So these commands fall into
 %% their own category of commands (say, ternary command). These commads'
 %% construction is handled by this function.
 %%
-%% @spec constructMemcachedQuery(term()) -> {md5(), iolist(), ResponseKind}
+%% @spec construct_memcached_query(term()) -> {md5(), iolist(), ResponseKind}
 %% Type ResponseKind = atom()
 %%
-constructMemcachedQueryCmd(Cmd, Key, Data) ->
-	constructMemcachedQueryCmd(Cmd, Key, Data, 0, 0).
-constructMemcachedQueryCmd(Cmd, Key, Data, Flags, Exptime)
+construct_memcached_query_cmd(Cmd, Key, Data) ->
+	construct_memcached_query_cmd(Cmd, Key, Data, 0, 0).
+construct_memcached_query_cmd(Cmd, Key, Data, Flags, Exptime)
 	when is_list(Cmd), is_integer(Flags), is_integer(Exptime),
 	Flags >= 0, Flags < 65536, Exptime >= 0 ->
-  case parseToBinaryIfPossbile(Key) of
+  case parse_to_binary_if_possible(Key) of
     error -> {error, bad_arg};
     BinaryKey ->
-      case parseToBinaryIfPossbile(Data) of
+      case parse_to_binary_if_possible(Data) of
         error -> {error, bad_arg};
         BinData ->
           {Key, [Cmd, " ", BinaryKey, " ", integer_to_list(Flags), " ", integer_to_list(Exptime),
@@ -728,30 +728,36 @@ constructMemcachedQueryCmd(Cmd, Key, Data, Flags, Exptime)
       end
   end.
 
-parseToBinaryIfPossbile(Data) ->
-  if
-    is_binary(Data) -> Data;
-    is_list(Data) -> list_to_binary(Data);
-    is_integer(Data) -> integer_to_binary(Data);
-    is_atom(Data) -> atom_to_binary(Data, utf8);
-    true ->
-      error_logger:error_msg("Failed to parse ~60p to binary", [Data]),
-      error
-  end.
+parse_to_binary_if_possible(Data) when is_binary(Data)->
+	Data;
+parse_to_binary_if_possible(Data) when is_list(Data) ->
+	list_to_binary(Data);
+parse_to_binary_if_possible(Data) when is_integer(Data) ->
+	integer_to_binary(Data);
+parse_to_binary_if_possible(Data) when is_atom(Data) ->
+	atom_to_binary(Data, utf8);
+parse_to_binary_if_possible(Data) ->
+	error_logger:error_msg("Failed to parse ~60p to binary", [Data]),
+	error.
 
--spec binaryJoin([binary()], binary()) -> binary().
-binaryJoin([], _Sep) ->
-  <<>>;
-binaryJoin([SinglePart], _Sep) ->
-  SinglePart;
-binaryJoin([Head|Tail], Sep) ->
-  case parseToBinaryIfPossbile(Head) of
+-spec binary_join([binary()], binary(), binary()) -> binary().
+binary_join([], _Sep, Current) ->
+  Current;
+binary_join([SinglePart], _Sep, Current) ->
+  case parse_to_binary_if_possible(SinglePart) of
     error -> <<>>;
-    BinaryHead -> lists:foldl(fun (Value, Acc) -> <<Acc/binary, Sep/binary, Value/binary>> end, BinaryHead, Tail)
+    BinaryPart -> <<Current/binary, BinaryPart/binary>>
+  end;
+binary_join([Head|Tail], Sep, Current) ->
+  case parse_to_binary_if_possible(Head) of
+    error -> <<>>;
+    BinaryHead ->
+      NewBits = <<Current/binary, BinaryHead/binary, Sep/binary>>,
+      binary_join(Tail, Sep, NewBits)
   end.
 
-replyBack(anon, _) -> true;
-replyBack(From, Result) -> gen_server:reply(From, Result).
+reply_back(anon, _) -> true;
+reply_back(From, Result) -> gen_server:reply(From, Result).
 
 data_receiver_loop(Parent, ParentMon, Socket) ->
 	NewSocket = receive
@@ -759,16 +765,16 @@ data_receiver_loop(Parent, ParentMon, Socket) ->
 		try data_receiver_accept_response(Operation, Opts, Socket) of
 		  Value ->
 			Parent ! {request_served, Socket},
-			replyBack(RequestorFrom, Value),
+			reply_back(RequestorFrom, Value),
 			Socket
 		catch
 		  error:{badmatch,{error,_}} ->
 			Parent ! {tcp_closed, Socket},
-			replyBack(RequestorFrom, {error, noconn}),
+			reply_back(RequestorFrom, {error, noconn}),
 			undefined
 		end;
 	  {accept_response, RequestorFrom, _, _} ->
-		replyBack(RequestorFrom, {error, noconn}),
+		reply_back(RequestorFrom, {error, noconn}),
 		Socket;
 	  {switch_receiving_socket, Parent, ReplaceSocket} ->
 		ReplaceSocket;

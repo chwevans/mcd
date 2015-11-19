@@ -69,12 +69,12 @@ Note: the default port for "localhost" is 11211.
 
 ## 3. USING MEMCACHED
 
-    {ok, b} = mcd:set(server, a, b).
+    {ok, b} = mcd:set(mainCluster, a, b).
     {ok,<<"b">>} = mcd:get(mainCluster, a).
-    {error, notfound} = mcd:get(server, foo).
+    {error, notfound} = mcd:get(mainCluster, foo).
     {ok,"*"} = mcd:set(mainCluster, <<"bar">>, [42]).
     {ok,<<"*">>} = mcd:get(mainCluster, <<"bar">>).
-    {ok,[{<<"a">>,<<"b">>},{<<"bar">>,<<"*">>}]} = mcd:multiGet(mainCluster, [a, <<"bar">>]).
+    {ok,[{<<"a">>,<<"b">>},{<<"bar">>,<<"*">>}]} = mcd:get_multi(mainCluster, [a, <<"bar">>]).
 
 ## 4. RELEASE NOTES
 
