@@ -170,7 +170,7 @@ terminate(_Reason, _State) ->
 
 log_problems(Node, Command, Start, Res) ->
     Threshold = 1000000, % 1 sec
-    Diff = timer:now_diff(now(), Start),
+    Diff = timer:now_diff(os:timestamp(), Start),
     ShouldLog = case {Diff, Res} of
         {T,_}  when T > Threshold -> true;
         {_, {exception, _}} -> true;
@@ -192,7 +192,7 @@ log_problems(Node, Command, Start, Res) ->
     end.
 
 call_node({_Name, ServerRef}=Node, Command) ->
-    Start = now(),
+    Start = os:timestamp(),
     try gen_server:call(ServerRef, Command) of
         Res -> 
             log_problems(Node, Command, Start, Res),

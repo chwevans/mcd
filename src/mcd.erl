@@ -567,7 +567,7 @@ compute_next_reconnect_delay(#state{status = Status}) ->
 	ComputeReconnectDelay = fun(Since) ->
 		% Wait increasingly longer,
 		% but no longer than 5 minutes.
-		case (utime(now()) - utime(Since)) of
+		case (utime(os:timestamp()) - utime(Since)) of
 			N when N > 300 -> 300 * 1000;
 			N -> N * 1000
 		end
@@ -576,7 +576,7 @@ compute_next_reconnect_delay(#state{status = Status}) ->
 		{connecting, Since, _} -> {Since, ComputeReconnectDelay(Since)};
 		{testing, Since} -> {Since, ComputeReconnectDelay(Since)};
 		{wait, Since} -> {Since, ComputeReconnectDelay(Since)};
-		_ -> {now(), 1000}
+		_ -> {os:timestamp(), 1000}
 	end.
 
 reconnector_process(MCDServerPid, Address, Port) ->
