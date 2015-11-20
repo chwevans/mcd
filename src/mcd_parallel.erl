@@ -42,7 +42,7 @@
 get(Wants, Satisfier) -> get(Wants, Satisfier, 5000).
 get(Wants, Satisfier, Timeout) ->
     ProcessRef = make_ref(),
-    wait(ProcessRef, now(), Timeout, [begin
+    wait(ProcessRef, os:timestamp(), Timeout, [begin
         ItemRef = make_ref(),
         try
             ServerRef ! { '$gen_call', {self(), {ProcessRef, ItemRef}}, {get, Key} }
@@ -54,7 +54,7 @@ get(Wants, Satisfier, Timeout) ->
     end || {ServerRef, Key} <- Wants], Satisfier).
 
 wait(ProcessRef, Started, Timeout, Waiting, Satisfier) ->
-    WaitMore = case Timeout - (timer:now_diff(now(), Started) div 1000) of
+    WaitMore = case Timeout - (timer:now_diff(os:timestamp(), Started) div 1000) of
         Time when Time > 0 ->
             Time;
         _ ->
