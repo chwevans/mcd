@@ -7,3 +7,5 @@ erl_crash.dump
 *.swp
 /_build
 rebar.lock
+mcd.d
+/.erlang.mk/
