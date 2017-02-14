@@ -213,13 +213,13 @@ ldo(set, Key, Data, Flag, Expires) ->
 
 %% These helper functions provide more self-evident API.
 -spec get(ServerRef :: server(), Key :: term()) -> get_result().
-get(ServerRef, Key) -> do(ServerRef, get, Key).
+get(ServerRef, Key) when is_binary(Key) -> do(ServerRef, get, Key).
 
 -spec get_multi(ServerRef :: server(), Keys :: [term()]) -> get_result().
 get_multi(ServerRef, Keys) -> do(ServerRef, multi_get, Keys).
 
 -spec set(ServerRef :: server(), Key :: term(), Data :: term()) -> set_result().
-set(ServerRef, Key, Data) -> do(ServerRef, set, Key, Data).
+set(ServerRef, Key, Data) when is_binary(Key) -> do(ServerRef, set, Key, Data).
 
 -spec set(ServerRef :: server(), Key :: term(), Data :: term(), Expiration :: expiration()) -> set_result().
 set(ServerRef, Key, Data, Expiration) -> do(ServerRef, {set, 0, Expiration}, Key, Data).

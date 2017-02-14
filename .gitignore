@@ -5,3 +5,5 @@
 erl_crash.dump
 /test/*.beam
 *.swp
+/_build
+rebar.lock
