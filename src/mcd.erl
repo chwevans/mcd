@@ -48,11 +48,9 @@
 -module(mcd).
 -behavior(gen_server).
 
--export([start_link/0, start_link/1, start_link/2]).
+-export([start_link/2, stop/1]).
 % <BC>
 -export([do/2, do/3, do/4]).
--export([ldo/1, ldo/2, ldo/3, ldo/5]).	%% do('localmcd', ...)
--export([get/1, set/2]).
 % </BC>
 -export([
 	get/2,
@@ -61,19 +59,12 @@
 	set/4,
 	set/5,
 	delete/2,
+  flush_all/1,
 	async_set/3,
 	async_set/4,
 	async_set/5,
 	version/1
 ]).
--export([
-	lserver/0,
-	lget/1,
-	lset/2,
-	lset/3,
-	ldelete/1,
-	lflush_all/0
-]). % <cmd>('localmcd', ...)
 -export([monitor/3]).
 -export([data_receiver_loop/3]).
 
@@ -145,25 +136,13 @@
 %% Assumes localhost:11211 if no server address is given.
 %%
 
--spec start_link() -> start_result().
-start_link() -> start_link([]).
+-spec start_link(inet:ip_address(), inet:port_number()) -> start_result().
+start_link(Address, Port) ->
+	gen_server:start_link(?MODULE, {Address, Port}, []).
 
--spec start_link(start_params()) -> start_result().
-start_link([]) -> start_link(["127.0.0.1"]);
-start_link([Address]) -> start_link([Address, 11211]);
-start_link([Address, Port]) ->
-	gen_server:start_link(?MODULE, [Address, Port], []).
-
-%%
-%% Start a named gen_server attached to a specified real memcached server.
-%% Assumes localhost:11211 if no server address is given.
-%%
-
--spec start_link(Name :: atom(), start_params()) -> start_result().
-start_link(Name, []) -> start_link(Name, ["127.0.0.1"]);
-start_link(Name, [Address]) -> start_link(Name, [Address, 11211]);
-start_link(Name, [Address, Port]) when is_atom(Name) ->
-	gen_server:start_link({local, Name}, ?MODULE, [Address, Port], []).
+-spec stop(pid()) -> ok.
+stop(Pid) ->
+  gen_server:stop(Pid).
 
 %%
 %% Call the specified memcached client gen_server with a request to ask
@@ -195,22 +174,6 @@ do(ServerRef, {Cmd}, Key, Data) ->
 do(ServerRef, {Cmd, Flag, Expires}, Key, Data) when is_integer(Flag), is_integer(Expires), Flag >= 0, Flag < 65536, Expires >= 0 ->
 	do_forwarder(call, ServerRef, {Cmd, Key, Data, Flag, Expires}).
 
--define(LOCALMCDNAME, localmcd).
-%%
-%% The "l<cmd>" is a "local cmd()". In our setup we assume that there is at least
-%% one shared memcached running on the local host, named 'localmcd' (started by
-%% an application supervisor process).
-%% This call helps to avoid writing the mcd:<cmd>(localmcd, ...) code,
-%% where using 'localmcd' string is prone to spelling errors.
-%%
-% <BC>
-ldo(A) -> do(?LOCALMCDNAME, A).
-ldo(A, B) -> do(?LOCALMCDNAME, A, B).
-ldo(A, B, C) -> do(?LOCALMCDNAME, A, B, C).
-ldo(set, Key, Data, Flag, Expires) ->
-        do(?LOCALMCDNAME, {set, Flag, Expires}, Key, Data).
-% </BC>
-
 %% These helper functions provide more self-evident API.
 -spec get(ServerRef :: server(), Key :: term()) -> get_result().
 get(ServerRef, Key) when is_binary(Key) -> do(ServerRef, get, Key).
@@ -236,30 +199,8 @@ delete(ServerRef, Key) -> do(ServerRef, delete, Key).
 -spec version(ServerRef :: server()) -> version_result().
 version(ServerRef) -> do(ServerRef, version).
 
-% local functions
-
--spec lserver() -> server().
-lserver() -> ?LOCALMCDNAME.
-
--spec lget(Key :: term()) -> get_result().
-lget(Key) -> get(?LOCALMCDNAME, Key).
-
--spec lset(Key :: term(), Data :: term()) -> set_result().
-lset(Key, Data) -> set(?LOCALMCDNAME, Key, Data).
-
--spec lset(Key :: term(), Data :: term(), Expiration :: expiration()) -> set_result().
-lset(Key, Data, Expiration) -> set(?LOCALMCDNAME, Key, Data, Expiration).
-
--spec ldelete(Key :: term()) -> delete_result().
-ldelete(Key) -> delete(?LOCALMCDNAME, Key).
-
--spec lflush_all() -> flush_result().
-lflush_all() -> do(?LOCALMCDNAME, flush_all).
-
-% <BC>
-get(Key) -> lget(Key).
-set(Key, Data) -> lset(Key, Data).
-% </BC>
+-spec flush_all(ServerRef :: server()) -> flush_result().
+flush_all(ServerRef) -> do(ServerRef, flush_all).
 
 % async functions
 
@@ -336,13 +277,15 @@ unload_connection(ServerRef) ->
 	}).
 
 
-init([Address, Port]) ->
-	{ ok, reconnect(#state{
-			address = Address,
-			port = Port,
-			receiver = start_data_receiver(self())
-		})
-	}.
+init({Address, Port}) ->
+  Receiver = start_data_receiver(self()),
+  InitialState = #state{
+    address = Address,
+    port = Port,
+    receiver = Receiver
+  },
+  FinalState = reconnect(InitialState),
+  {ok, FinalState}.
 
 start_data_receiver(Parent) ->
 	spawn_monitor(fun() ->

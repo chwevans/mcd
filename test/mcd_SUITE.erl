@@ -15,7 +15,6 @@
     test_common_errors/1
 ]).
 
--define(BUCKET, test).
 -define(KEY, list_to_binary(?MODULE_STRING ++ "_" ++ "key")).
 -define(VALUE, <<"value">>).
 -define(TTL, 1).
@@ -28,56 +27,51 @@ all() -> [
 ].
 
 init_per_suite(Config) ->
-    ok = application:start(dht_ring),
-
-    ok = application:set_env(mcd, mcd_hosts, [{localhost, ["localhost"]}]),
-    ok = application:set_env(mcd, mcd_buckets, [
-        {mcd:lserver(), {localhost, 11211}},
-        {?BUCKET, {localhost, 11211}}
-    ]),
-    ok = application:start(mcd),
-    ok = mcd_test_helper:wait_all(),
+    {ok, _} = application:ensure_all_started(mcd),
     Config.
 
 end_per_suite(_Config) ->
-    ok = application:stop(mcd),
-    ok = application:stop(dht_ring).
+    ok = application:stop(mcd).
 
 % Tests
 
 test_do(_Config) ->
-    {ok, [_ | _]} = mcd:do(?BUCKET, version),
-    {ok, flushed} = mcd:do(?BUCKET, flush_all),
-    {ok, flushed} = mcd:do(?BUCKET, {flush_all, 10}),
-    {error, notfound} = mcd:do(?BUCKET, get, ?KEY),
-    {error, notfound} = mcd:do(?BUCKET, delete, ?KEY),
+    Pid = get_pid(),
+    {ok, [_ | _]} = mcd:do(Pid, version),
+    {ok, flushed} = mcd:do(Pid, flush_all),
+    {ok, flushed} = mcd:do(Pid, {flush_all, 10}),
+    {error, notfound} = mcd:do(Pid, get, ?KEY),
+    {error, notfound} = mcd:do(Pid, delete, ?KEY),
     try
-        {ok, ?VALUE} = mcd:do(?BUCKET, set, ?KEY, ?VALUE),
-        {error, notstored} = mcd:do(?BUCKET, add, ?KEY, ?VALUE),
-        {ok, ?VALUE} = mcd:do(?BUCKET, replace, ?KEY, ?VALUE),
-        {ok, ?VALUE} = mcd:do(?BUCKET, {set, 0, ?TTL}, ?KEY, ?VALUE),
-        {error, notstored} = mcd:do(?BUCKET, {add, 0, ?TTL}, ?KEY, ?VALUE),
-        {ok, ?VALUE} = mcd:do(?BUCKET, {replace, 0, ?TTL}, ?KEY, ?VALUE),
-        {ok, deleted} = mcd:do(?BUCKET, delete, ?KEY)
+        {ok, ?VALUE} = mcd:do(Pid, set, ?KEY, ?VALUE),
+        {error, notstored} = mcd:do(Pid, add, ?KEY, ?VALUE),
+        {ok, ?VALUE} = mcd:do(Pid, replace, ?KEY, ?VALUE),
+        {ok, ?VALUE} = mcd:do(Pid, {set, 0, ?TTL}, ?KEY, ?VALUE),
+        {error, notstored} = mcd:do(Pid, {add, 0, ?TTL}, ?KEY, ?VALUE),
+        {ok, ?VALUE} = mcd:do(Pid, {replace, 0, ?TTL}, ?KEY, ?VALUE),
+        {ok, deleted} = mcd:do(Pid, delete, ?KEY)
     after
-        mcd:do(?BUCKET, delete, ?KEY)
+        mcd:do(Pid, delete, ?KEY),
+        mcd:stop(Pid)
     end.
 
 test_api(_Config) ->
-    {ok, [_ | _]} = mcd:version(?BUCKET),
+    Pid = get_pid(),
+    {ok, [_ | _]} = mcd:version(Pid),
 
-    GetFun = fun() -> mcd:get(?BUCKET, ?KEY) end,
-    DeleteFun = fun() -> mcd:delete(?BUCKET, ?KEY) end,
+    GetFun = fun() -> mcd:get(Pid, ?KEY) end,
+    DeleteFun = fun() -> mcd:delete(Pid, ?KEY) end,
 
-    test_set(GetFun, DeleteFun, fun() -> mcd:set(?BUCKET, ?KEY, ?VALUE) end),
-    test_set_expiration(GetFun, DeleteFun, fun() -> mcd:set(?BUCKET, ?KEY, ?VALUE, ?TTL) end),
-    test_set_expiration(GetFun, DeleteFun, fun() -> mcd:set(?BUCKET, ?KEY, ?VALUE, ?TTL, 0) end),
-    test_set(GetFun, DeleteFun, fun() -> {ok, mcd:async_set(?BUCKET, ?KEY, ?VALUE)} end),
-    test_set_expiration(GetFun, DeleteFun, fun() -> {ok, mcd:async_set(?BUCKET, ?KEY, ?VALUE, ?TTL)} end),
-    test_set_expiration(GetFun, DeleteFun, fun() -> {ok, mcd:async_set(?BUCKET, ?KEY, ?VALUE, ?TTL, 0)} end).
+    test_set(GetFun, DeleteFun, fun() -> mcd:set(Pid, ?KEY, ?VALUE) end),
+    test_set_expiration(GetFun, DeleteFun, fun() -> mcd:set(Pid, ?KEY, ?VALUE, ?TTL) end),
+    test_set_expiration(GetFun, DeleteFun, fun() -> mcd:set(Pid, ?KEY, ?VALUE, ?TTL, 0) end),
+    test_set(GetFun, DeleteFun, fun() -> {ok, mcd:async_set(Pid, ?KEY, ?VALUE)} end),
+    test_set_expiration(GetFun, DeleteFun, fun() -> {ok, mcd:async_set(Pid, ?KEY, ?VALUE, ?TTL)} end),
+    test_set_expiration(GetFun, DeleteFun, fun() -> {ok, mcd:async_set(Pid, ?KEY, ?VALUE, ?TTL, 0)} end),
+    mcd:stop(Pid).
 
 test_common_errors(_Config) ->
-    {_, Pid} = hd(mcd_cluster:nodes(?BUCKET)),
+    Pid = get_pid(),
 
     {error, timeout} = mcd:version(self()),
     {error, noproc} = mcd:version(undefined),
@@ -89,7 +83,7 @@ test_common_errors(_Config) ->
         {error, noconn} = mcd:version(Pid)
     after
         ok = mcd:fix_connection(Pid),
-        ok = mcd_test_helper:wait_connection(Pid)
+        ok = wait_connection(Pid, 5)
     end,
 
     {ok, [_ | _]} = mcd:version(Pid),
@@ -101,23 +95,26 @@ test_common_errors(_Config) ->
         ok = mcd:unload_connection(Pid)
     end,
 
-    {ok, [_ | _]} = mcd:version(Pid).
+    {ok, [_ | _]} = mcd:version(Pid),
+    mcd:stop(Pid).
 
 test_local(_Config) ->
-    GetFun = fun() -> mcd:lget(?KEY) end,
-    DeleteFun = fun() -> mcd:ldelete(?KEY) end,
+    Pid = get_pid(),
+    GetFun = fun() -> mcd:get(Pid, ?KEY) end,
+    DeleteFun = fun() -> mcd:delete(Pid, ?KEY) end,
 
-    test_set(GetFun, DeleteFun, fun() -> mcd:lset(?KEY, ?VALUE) end),
-    test_set_expiration(GetFun, DeleteFun, fun() -> mcd:lset(?KEY, ?VALUE, ?TTL) end),
+    test_set(GetFun, DeleteFun, fun() -> mcd:set(Pid, ?KEY, ?VALUE) end),
+    test_set_expiration(GetFun, DeleteFun, fun() -> mcd:set(Pid, ?KEY, ?VALUE, ?TTL) end),
 
-    {error, notfound} = mcd:lget(?KEY),
+    {error, notfound} = mcd:get(Pid, ?KEY),
     try
-        {ok, ?VALUE} = mcd:lset(?KEY, ?VALUE),
-        {ok, flushed} = mcd:lflush_all(),
-        {error, notfound} = mcd:lget(?KEY)
+        {ok, ?VALUE} = mcd:set(Pid, ?KEY, ?VALUE),
+        {ok, flushed} = mcd:flush_all(Pid),
+        {error, notfound} = mcd:get(Pid, ?KEY)
     after
-        mcd:ldelete(?KEY)
-    end.
+        mcd:delete(Pid, ?KEY)
+    end,
+    mcd:stop(Pid).
 
 
 % private functions
@@ -143,3 +140,22 @@ test_set_expiration(GetFun, DeleteFun, SetFun) ->
     after
         DeleteFun()
     end.
+
+get_pid() ->
+	{ok, Pid} = mcd:start_link("127.0.0.1", 11211),
+	ok = wait_connection(Pid, 10),
+	Pid.
+
+wait_connection(_Pid, 0) ->
+	{error, timeout};
+wait_connection(Pid, Tries) ->
+    case {mcd:version(Pid), Tries} of
+        {{ok, [_ | _]}, _} ->
+            ok;
+        {Error, 0} ->
+            lager:error("Unexpected mcd answer: ~p~n", [Error]),
+			{error, timeout};
+        {_Error, Tries} ->
+			timer:sleep(10),
+            wait_connection(Pid, Tries - 1)
+	end.
