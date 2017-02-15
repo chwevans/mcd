@@ -149,7 +149,7 @@ do_multi_get(ServerRef, [], Keys) -> do(ServerRef, multi_get, Keys);
 do_multi_get(ServerRef, [H | Rest], Keys) when is_binary(H) -> do_multi_get(ServerRef, Rest, Keys).
 
 -spec set(ServerRef :: server(), Key :: term(), Data :: term()) -> set_result().
-set(ServerRef, Key, Data) when is_binary(Key) andalso is_binary(Data) -> do(ServerRef, set, Key, Data).
+set(ServerRef, Key, Data) when is_binary(Key) andalso is_binary(Data) -> set(ServerRef, Key, Data, 0).
 
 -spec set(ServerRef :: server(), Key :: term(), Data :: term(), Expiration :: expiration()) -> set_result().
 set(ServerRef, Key, Data, Expiration) when is_binary(Key) andalso is_binary(Data) -> do(ServerRef, {set, 0, Expiration}, Key, Data).
