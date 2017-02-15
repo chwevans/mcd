@@ -37,21 +37,19 @@ end_per_suite(_Config) ->
 
 test_do(_Config) ->
     Pid = get_pid(),
-    {ok, [_ | _]} = mcd:do(Pid, version),
-    {ok, flushed} = mcd:do(Pid, flush_all),
-    {ok, flushed} = mcd:do(Pid, {flush_all, 10}),
-    {error, notfound} = mcd:do(Pid, get, ?KEY),
-    {error, notfound} = mcd:do(Pid, delete, ?KEY),
+    {ok, [_ | _]} = mcd:version(Pid),
+    {ok, flushed} = mcd:flush_all(Pid),
+    {ok, flushed} = mcd:flush_all(Pid, 10),
+    {error, notfound} = mcd:get(Pid, ?KEY),
+    {error, notfound} = mcd:multi_get(Pid, [?KEY]),
+    {error, notfound} = mcd:get(Pid, ?KEY),
+    {error, notfound} = mcd:delete(Pid, ?KEY),
     try
-        {ok, ?VALUE} = mcd:do(Pid, set, ?KEY, ?VALUE),
-        {error, notstored} = mcd:do(Pid, add, ?KEY, ?VALUE),
-        {ok, ?VALUE} = mcd:do(Pid, replace, ?KEY, ?VALUE),
-        {ok, ?VALUE} = mcd:do(Pid, {set, 0, ?TTL}, ?KEY, ?VALUE),
-        {error, notstored} = mcd:do(Pid, {add, 0, ?TTL}, ?KEY, ?VALUE),
-        {ok, ?VALUE} = mcd:do(Pid, {replace, 0, ?TTL}, ?KEY, ?VALUE),
-        {ok, deleted} = mcd:do(Pid, delete, ?KEY)
+        {ok, ?VALUE} = mcd:set(Pid, ?KEY, ?VALUE),
+        {ok, ?VALUE} = mcd:set(Pid, ?KEY, ?VALUE, ?TTL),
+        {ok, deleted} = mcd:delete(Pid, ?KEY)
     after
-        mcd:do(Pid, delete, ?KEY),
+        mcd:delete(Pid, ?KEY),
         mcd:stop(Pid)
     end.
 
@@ -64,10 +62,6 @@ test_api(_Config) ->
 
     test_set(GetFun, DeleteFun, fun() -> mcd:set(Pid, ?KEY, ?VALUE) end),
     test_set_expiration(GetFun, DeleteFun, fun() -> mcd:set(Pid, ?KEY, ?VALUE, ?TTL) end),
-    test_set_expiration(GetFun, DeleteFun, fun() -> mcd:set(Pid, ?KEY, ?VALUE, ?TTL, 0) end),
-    test_set(GetFun, DeleteFun, fun() -> {ok, mcd:async_set(Pid, ?KEY, ?VALUE)} end),
-    test_set_expiration(GetFun, DeleteFun, fun() -> {ok, mcd:async_set(Pid, ?KEY, ?VALUE, ?TTL)} end),
-    test_set_expiration(GetFun, DeleteFun, fun() -> {ok, mcd:async_set(Pid, ?KEY, ?VALUE, ?TTL, 0)} end),
     mcd:stop(Pid).
 
 test_common_errors(_Config) ->

@@ -49,24 +49,17 @@
 -behavior(gen_server).
 
 -export([start_link/2, stop/1]).
-% <BC>
--export([do/2, do/3, do/4]).
 % </BC>
 -export([
 	get/2,
-  get_multi/2,
+  multi_get/2,
 	set/3,
 	set/4,
-	set/5,
 	delete/2,
   flush_all/1,
-	async_set/3,
-	async_set/4,
-	async_set/5,
+  flush_all/2,
 	version/1
 ]).
--export([monitor/3]).
--export([data_receiver_loop/3]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
@@ -144,57 +137,25 @@ start_link(Address, Port) ->
 stop(Pid) ->
   gen_server:stop(Pid).
 
-%%
-%% Call the specified memcached client gen_server with a request to ask
-%% something from the associated real memcached process.
-%%
-%% The do/{2,3,4} is lighter than direct gen_server:call() to memcached
-%% gen_server, since it spends some CPU in the requestor processes instead.
-%%
-%% See the file banner for possible requests.
-%%
-
--spec do(ServerRef :: server(), SimpleRequest :: simple_request()) -> do_result().
-do(ServerRef, SimpleRequest) when is_atom(SimpleRequest) ->
-	do_forwarder(call, ServerRef, {SimpleRequest});
-do(ServerRef, SimpleRequest) when is_tuple(SimpleRequest) ->
-	do_forwarder(call, ServerRef, SimpleRequest).
-
--spec do(ServerRef :: server(), KeyRequest :: key_request(), Key :: term()) -> do_result().
-do(ServerRef, KeyRequest, Key) when is_atom(KeyRequest) ->
-	do_forwarder(call, ServerRef, {KeyRequest, Key});
-do(ServerRef, {KeyRequest}, Key) ->
-	do_forwarder(call, ServerRef, {KeyRequest, Key}).
-
--spec do(ServerRef :: server(), KeyDataReq :: key_data_request(), Key :: term(), Data :: term()) -> do_result().
-do(ServerRef, KeyDataReq, Key, Data) when is_atom(KeyDataReq) ->
-	do_forwarder(call, ServerRef, {KeyDataReq, Key, Data});
-do(ServerRef, {Cmd}, Key, Data) ->
-	do_forwarder(call, ServerRef, {Cmd, Key, Data});
-do(ServerRef, {Cmd, Flag, Expires}, Key, Data) when is_integer(Flag), is_integer(Expires), Flag >= 0, Flag < 65536, Expires >= 0 ->
-	do_forwarder(call, ServerRef, {Cmd, Key, Data, Flag, Expires}).
-
 %% These helper functions provide more self-evident API.
 -spec get(ServerRef :: server(), Key :: term()) -> get_result().
 get(ServerRef, Key) when is_binary(Key) -> do(ServerRef, get, Key).
 
--spec get_multi(ServerRef :: server(), Keys :: [term()]) -> get_result().
-get_multi(ServerRef, Keys) -> do(ServerRef, multi_get, Keys).
+-spec multi_get(ServerRef :: server(), Keys :: [term()]) -> get_result().
+multi_get(ServerRef, Keys) ->
+  do_multi_get(ServerRef, Keys, Keys).
+
+do_multi_get(ServerRef, [], Keys) -> do(ServerRef, multi_get, Keys);
+do_multi_get(ServerRef, [H | Rest], Keys) when is_binary(H) -> do_multi_get(ServerRef, Rest, Keys).
 
 -spec set(ServerRef :: server(), Key :: term(), Data :: term()) -> set_result().
-set(ServerRef, Key, Data) when is_binary(Key) -> do(ServerRef, set, Key, Data).
+set(ServerRef, Key, Data) when is_binary(Key) andalso is_binary(Data) -> do(ServerRef, set, Key, Data).
 
 -spec set(ServerRef :: server(), Key :: term(), Data :: term(), Expiration :: expiration()) -> set_result().
-set(ServerRef, Key, Data, Expiration) -> do(ServerRef, {set, 0, Expiration}, Key, Data).
-
--spec set(ServerRef :: server(), Key :: term(), Data :: term(), Expiration :: expiration(), Flags :: flags()) -> set_result().
-% <BC>
-set(ServerRef, Key, Data, 0, Expiration) -> do(ServerRef, {set, 0, Expiration}, Key, Data);
-% </BC>
-set(ServerRef, Key, Data, Expiration, Flags) -> do(ServerRef, {set, Flags, Expiration}, Key, Data).
+set(ServerRef, Key, Data, Expiration) when is_binary(Key) andalso is_binary(Data) -> do(ServerRef, {set, 0, Expiration}, Key, Data).
 
 -spec delete(ServerRef :: server(), Key :: term()) -> delete_result().
-delete(ServerRef, Key) -> do(ServerRef, delete, Key).
+delete(ServerRef, Key) when is_binary(Key) -> do(ServerRef, delete, Key).
 
 -spec version(ServerRef :: server()) -> version_result().
 version(ServerRef) -> do(ServerRef, version).
@@ -202,41 +163,8 @@ version(ServerRef) -> do(ServerRef, version).
 -spec flush_all(ServerRef :: server()) -> flush_result().
 flush_all(ServerRef) -> do(ServerRef, flush_all).
 
-% async functions
-
--spec async_set(ServerRef :: server(), Key :: term(), Data :: term()) -> term().
-async_set(ServerRef, Key, Data) ->
-	do_forwarder(cast, ServerRef, {set, Key, Data}),
-	Data.
-
--spec async_set(ServerRef :: server(), Key :: term(), Data :: term(), Expiration :: expiration()) -> term().
-async_set(ServerRef, Key, Data, Expiration) ->
-	async_set(ServerRef, Key, Data, Expiration, 0).
-
--spec async_set(ServerRef :: server(), Key :: term(), Data :: term(), Expiration :: expiration(), Flags :: flags()) -> term().
-% <BC>
-async_set(ServerRef, Key, Data, 0, Expiration) ->
-	do_forwarder(cast, ServerRef, {set, Key, Data, 0, Expiration}),
-	Data;
-% </BC>
-async_set(ServerRef, Key, Data, Expiration, Flags) ->
-	do_forwarder(cast, ServerRef, {set, Key, Data, Flags, Expiration}),
-	Data.
-
-%%
-%% Enroll a specified monitoring process (MonitorPid) to receive
-%% notifications about memcached state transitions and other anomalies.
-%% This call sets or replaces the previous set of items to monitor for.
-%%
-%% @spec monitor(ServerRef, MonitorPid, MonitorItems)
-%% Type MonitorPid = pid() | atom()
-%%      MonitorItems = [MonitorItem]
-%%      MonitorItem = state | overload
-%%
-monitor(ServerRef, MonitorPid, MonitorItems) when is_list(MonitorItems) ->
-	gen_server:call(ServerRef, {set_monitor, MonitorPid, MonitorItems});
-monitor(ServerRef, MonitorPid, MonitorItem) when is_atom(MonitorItem) ->
-	?MODULE:monitor(ServerRef, MonitorPid, [MonitorItem]).
+-spec flush_all(ServerRef :: server(), integer()) -> flush_result().
+flush_all(ServerRef, Expiration) -> do(ServerRef, {flush_all, Expiration}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % for selftesting
@@ -300,17 +228,6 @@ handle_call(status, _From, State) ->
 		[{requests, QTotal}, {outstanding, QOut}, {overloads, QOV},
 		{reconnects, REC}, {status, Status}],
 	State};
-handle_call({set_monitor, MonitorPid, Items}, _From, #state{monitored_by=CurMons} = State) ->
-	MonRef = erlang:monitor(process, MonitorPid),
-	NewMons = add_monitor_pid_items(demonitor_pid(CurMons, MonitorPid),
-			MonitorPid, MonRef, Items),
-	MonitoredItemsForPid = collect_monitored_items(NewMons, MonitorPid),
-	case MonitoredItemsForPid of
-		[] -> erlang:demonitor(MonRef);
-		_ -> ok
-	end,
-	{reply, MonitoredItemsForPid, State#state{monitored_by = NewMons}};
-
 
 % unexpected disconnect simulation
 handle_call(break_connection, _From, #state{socket = Socket, address = Address} = State) ->
@@ -332,7 +249,7 @@ handle_call(Query, From, State) -> {noreply, schedule_query(State, Query, From)}
 
 % <BC>
 handle_cast(restart_receiver, #state{socket = Socket, receiver = {Pid, MonRef}} = State) ->
-	error_logger:info_msg("Restart memcached receiver ~p~n", [Pid]),
+	lager:warning("Restart memcached receiver ~p", [Pid]),
 	erlang:demonitor(MonRef, [flush]),
 	timer:apply_after(10000, erlang, exit, [Pid, kill]),
 	{RcvrPid, _} = Rcvr = start_data_receiver(self()),
@@ -389,20 +306,19 @@ handle_info({{connection_tested, Socket}, {ok, _Version}}, #state{socket = Socke
 handle_info({timeout, _, {may, reconnect}}, State) -> {noreply, reconnect(State)};
 handle_info({tcp_closed, Socket}, #state{socket = Socket} = State) ->
 	{noreply, reconnect(State#state{socket = nosocket})};
-handle_info({'DOWN', MonRef, process, Pid, _Info}, #state{status={connecting,_,{Pid,MonRef}}}=State) ->
-	error_logger:info_msg("Memcached connector died (~p),"
-			" simulating nosock~n", [_Info]),
+handle_info({'DOWN', MonRef, process, Pid, Info}, #state{status={connecting,_,{Pid,MonRef}}}=State) ->
+	lager:error("Memcached connector died (~p), simulating nosock", [Info]),
 	handle_cast({connected, Pid, nosocket}, State);
 handle_info({'DOWN', MonRef, process, Pid, _Info} = Info, #state{receiver={Pid,MonRef}}=State) ->
-	error_logger:error_msg("Memcached receiver died (~p)~n", [Info]),
+	lager:error("Memcached receiver died (~p)", [Info]),
 	{stop, {receiver_down, _Info}, State};
 
 handle_info({'DOWN', MonRef, process, Pid, _Info}, #state{monitored_by=Mons}=State) ->
 	{noreply, State#state{
 		monitored_by = remove_monitor_pid_and_ref(Mons, Pid, MonRef)
 		} };
-handle_info(_Info, State) ->
-	io:format("Some info: ~p~n", [_Info]),
+handle_info(Info, State) ->
+	lager:info("Unknown info: ~p", [Info]),
 	{noreply, State}.
 
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
@@ -413,16 +329,6 @@ terminate(_Reason, _State) -> ok.
 % Internal functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-% Remove the specified pid from the lists of nodes monitoring this gen_server.
-demonitor_pid(Monitors, MonitorPid) ->
-	[{Item, NewPids}
-		|| {Item, PidRefs} <- Monitors,
-		   NewPids <- [[PM || {P, MonRef} = PM <- PidRefs,
-				erlang:demonitor(MonRef) == true,
-				P /= MonitorPid]],
-		   NewPids /= []
-	].
-
 remove_monitor_pid_and_ref(Monitors, Pid, MonRef) ->
 	[{Item, NewPids}
 		|| {Item, PidRefs} <- Monitors,
@@ -431,35 +337,11 @@ remove_monitor_pid_and_ref(Monitors, Pid, MonRef) ->
 		   NewPids /= []
 	].
 
-% Add the specified pid to the lists of nodes monitoring this gen_server.
-add_monitor_pid_items(Monitors, MonitorPid, MonRef, Items) ->
-	lists:foldl(fun(Item, M) ->
-		add_monitor_pid_item(M, MonitorPid, MonRef, Item)
-	end, Monitors, Items).
-
-add_monitor_pid_item(Monitors, Pid, MonRef, I) when I == state; I == overload ->
-	NewMons = [{Item, NewPids}
-		|| {Item, Pids} <- Monitors,
-		   NewPids <- [case Item of
-				I -> [{Pid, MonRef} | Pids];
-				_ -> Pids
-				end]
-	],
-	case lists:keysearch(I, 1, NewMons) of
-		false -> [{I, [{Pid, MonRef}]}|NewMons];
-		{value, _} -> NewMons
-	end;
-add_monitor_pid_item(Monitors, _Pid, _MonRef, _Item) -> Monitors.
 
 report_event(#state{monitored_by = Mons} = State, Event, Info) ->
 	[P ! {memcached, self(), Event, Info}
 		|| {Item, Pids} <- Mons, Item == Event, {P, _} <- Pids],
 	State.
-
-% Figure out what items this pid monitors.
-collect_monitored_items(Monitors, MonitorPid) ->
-	[Item || {Item, Pids} <- Monitors,
-		lists:keysearch(MonitorPid, 1, Pids) /= false].
 
 % @spec utime(now()) -> int()
 utime({Mega, Secs, _}) -> 1000000 * Mega + Secs.
@@ -469,8 +351,7 @@ incr_anomaly({QOverloads, Reconnects, Unused}, overloads) ->
 incr_anomaly({QOverloads, Reconnects, Unused}, reconnects) ->
 	{QOverloads, Reconnects + 1, Unused};
 incr_anomaly(Anomaly, FieldName) ->
-	error_logger:error_msg("Anomaly ~p couldn't be increased in ~p~n",
-		[FieldName, Anomaly]),
+	lager:error("Anomaly ~p couldn't be increased in ~p", [FieldName, Anomaly]),
 	Anomaly.
 
 %% Destroy the existing connection and create a new one based on State params
@@ -523,8 +404,7 @@ compute_next_reconnect_delay(#state{status = Status}) ->
 	end.
 
 reconnector_process(MCDServerPid, Address, Port) ->
-	error_logger:info_msg("Creating interface ~p to memcached on ~p:~p~n",
-          [MCDServerPid, Address,Port]),
+	lager:info("Creating interface ~p to memcached on ~p:~p", [MCDServerPid, Address, Port]),
 
 	Socket = case gen_tcp:connect(Address, Port,
 			[{packet, line}, binary, {active, false}], 5000) of
@@ -621,10 +501,7 @@ construct_memcached_query({replace, Key, Data}) ->
 construct_memcached_query({replace, Key, Data, Flags, Expiration}) ->
 	construct_memcached_query_cmd("replace", Key, Data, Flags, Expiration);
 construct_memcached_query({get, Key}) ->
-  case parse_to_binary_if_possible(Key) of
-    error -> {error, bad_arg};
-    BinaryKey -> {BinaryKey, ["get ", BinaryKey, "\r\n"], rtGet}
-  end;
+  {Key, ["get ", Key, "\r\n"], rtGet};
 construct_memcached_query({multi_get, Keys}) ->
   JoinedKeys = binary_join(Keys, <<" ">>, <<>>),
   {JoinedKeys, ["get ", JoinedKeys, "\r\n"], rtMultiGet};
@@ -656,48 +533,21 @@ construct_memcached_query({flush_all}) -> {<<>>, ["flush_all\r\n"], rtFlush}.
 construct_memcached_query_cmd(Cmd, Key, Data) ->
 	construct_memcached_query_cmd(Cmd, Key, Data, 0, 0).
 construct_memcached_query_cmd(Cmd, Key, Data, Flags, Exptime)
-	when is_list(Cmd), is_integer(Flags), is_integer(Exptime),
-	Flags >= 0, Flags < 65536, Exptime >= 0 ->
-  case parse_to_binary_if_possible(Key) of
-    error -> {error, bad_arg};
-    BinaryKey ->
-      case parse_to_binary_if_possible(Data) of
-        error -> {error, bad_arg};
-        BinData ->
-          {Key, [Cmd, " ", BinaryKey, " ", integer_to_list(Flags), " ", integer_to_list(Exptime),
-            " ", integer_to_list(size(BinData)),
-            "\r\n", BinData, "\r\n"
-          ], rtCmd}
-      end
-  end.
-
-parse_to_binary_if_possible(Data) when is_binary(Data)->
-	Data;
-parse_to_binary_if_possible(Data) when is_list(Data) ->
-	list_to_binary(Data);
-parse_to_binary_if_possible(Data) when is_integer(Data) ->
-	integer_to_binary(Data);
-parse_to_binary_if_possible(Data) when is_atom(Data) ->
-	atom_to_binary(Data, utf8);
-parse_to_binary_if_possible(Data) ->
-	error_logger:error_msg("Failed to parse ~60p to binary", [Data]),
-	error.
+	  when is_list(Cmd), is_integer(Flags), is_integer(Exptime),
+	  Flags >= 0, Flags < 65536, Exptime >= 0 ->
+  {Key, [Cmd, " ", Key, " ", integer_to_list(Flags), " ", integer_to_list(Exptime),
+          " ", integer_to_list(size(Data)),
+             "\r\n", Data, "\r\n"
+        ], rtCmd}.
 
 -spec binary_join([binary()], binary(), binary()) -> binary().
 binary_join([], _Sep, Current) ->
   Current;
 binary_join([SinglePart], _Sep, Current) ->
-  case parse_to_binary_if_possible(SinglePart) of
-    error -> <<>>;
-    BinaryPart -> <<Current/binary, BinaryPart/binary>>
-  end;
+  <<Current/binary, SinglePart/binary>>;
 binary_join([Head|Tail], Sep, Current) ->
-  case parse_to_binary_if_possible(Head) of
-    error -> <<>>;
-    BinaryHead ->
-      NewBits = <<Current/binary, BinaryHead/binary, Sep/binary>>,
-      binary_join(Tail, Sep, NewBits)
-  end.
+  NewBits = <<Current/binary, Head/binary, Sep/binary>>,
+  binary_join(Tail, Sep, NewBits).
 
 reply_back(anon, _) -> true;
 reply_back(From, Result) -> gen_server:reply(From, Result).
@@ -725,7 +575,7 @@ data_receiver_loop(Parent, ParentMon, Socket) ->
 	  _Message -> Socket
 	after 1000 -> Socket
 	end,
-	?MODULE:data_receiver_loop(Parent, ParentMon, NewSocket).
+	data_receiver_loop(Parent, ParentMon, NewSocket).
 
 data_receiver_accept_response(rtVer, _, Socket) ->
 	{ok, Response} = gen_tcp:recv(Socket, 0),
@@ -817,3 +667,33 @@ multi_get_helper(ExpFlags, Socket, CurrentResult) ->
     {ok, {'$value_blob', {Key, Val}}} -> multi_get_helper(ExpFlags, Socket, [{Key, Val}|CurrentResult]);
     {ok, {Key, Val}} -> multi_get_helper(ExpFlags, Socket, [{Key, Val}|CurrentResult])
   end.
+
+%%
+%% Call the specified memcached client gen_server with a request to ask
+%% something from the associated real memcached process.
+%%
+%% The do/{2,3,4} is lighter than direct gen_server:call() to memcached
+%% gen_server, since it spends some CPU in the requestor processes instead.
+%%
+%% See the file banner for possible requests.
+%%
+-spec do(ServerRef :: server(), SimpleRequest :: simple_request()) -> do_result().
+do(ServerRef, SimpleRequest) when is_atom(SimpleRequest) ->
+	do_forwarder(call, ServerRef, {SimpleRequest});
+do(ServerRef, SimpleRequest) when is_tuple(SimpleRequest) ->
+	do_forwarder(call, ServerRef, SimpleRequest).
+
+-spec do(ServerRef :: server(), KeyRequest :: key_request(), Key :: term()) -> do_result().
+do(ServerRef, KeyRequest, Key) when is_atom(KeyRequest) ->
+	do_forwarder(call, ServerRef, {KeyRequest, Key});
+do(ServerRef, {KeyRequest}, Key) ->
+	do_forwarder(call, ServerRef, {KeyRequest, Key}).
+
+-spec do(ServerRef :: server(), KeyDataReq :: key_data_request(), Key :: term(), Data :: term()) -> do_result().
+do(ServerRef, KeyDataReq, Key, Data) when is_atom(KeyDataReq) ->
+	do_forwarder(call, ServerRef, {KeyDataReq, Key, Data});
+do(ServerRef, {Cmd}, Key, Data) ->
+	do_forwarder(call, ServerRef, {Cmd, Key, Data});
+do(ServerRef, {Cmd, Flag, Expires}, Key, Data) when is_integer(Flag), is_integer(Expires), Flag >= 0, Flag < 65536, Expires >= 0 ->
+	do_forwarder(call, ServerRef, {Cmd, Key, Data, Flag, Expires}).
+
