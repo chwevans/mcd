@@ -48,7 +48,7 @@
 -module(mcd).
 -behavior(gen_server).
 
--export([start_link/2, stop/1]).
+-export([start_link/2, start_link/3, stop/1]).
 % </BC>
 -export([
 	get/2,
@@ -131,7 +131,11 @@
 
 -spec start_link(inet:ip_address(), inet:port_number()) -> start_result().
 start_link(Address, Port) ->
-	gen_server:start_link(?MODULE, {Address, Port}, []).
+  start_link(Address, Port, undefined).
+
+-spec start_link(inet:ip_address(), inet:port_number(), atom()) -> start_result().
+start_link(Address, Port, Pg2Group) ->
+	gen_server:start_link(?MODULE, {Address, Port, Pg2Group}, []).
 
 -spec stop(pid()) -> ok.
 stop(Pid) ->
@@ -205,7 +209,14 @@ unload_connection(ServerRef) ->
 	}).
 
 
-init({Address, Port}) ->
+init({Address, Port, Pg2Group}) ->
+  case Pg2Group of
+    undefined ->
+      ok;
+    Pg2Group ->
+      pg2:create(Pg2Group),
+      pg2:join(Pg2Group, self())
+  end,
   Receiver = start_data_receiver(self()),
   InitialState = #state{
     address = Address,
@@ -305,6 +316,9 @@ handle_info({{connection_tested, Socket}, {ok, _Version}}, #state{socket = Socke
 	{noreply, State#state{status = ready}};
 handle_info({timeout, _, {may, reconnect}}, State) -> {noreply, reconnect(State)};
 handle_info({tcp_closed, Socket}, #state{socket = Socket} = State) ->
+	{noreply, reconnect(State#state{socket = nosocket})};
+handle_info({tcp_closed, Socket}, State) ->
+  lager:error("Got tcp closed for ~p, when state is ~p", [Socket, State]),
 	{noreply, reconnect(State#state{socket = nosocket})};
 handle_info({'DOWN', MonRef, process, Pid, Info}, #state{status={connecting,_,{Pid,MonRef}}}=State) ->
 	lager:error("Memcached connector died (~p), simulating nosock", [Info]),

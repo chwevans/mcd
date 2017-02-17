@@ -3,9 +3,9 @@
 -include_lib("common_test/include/ct.hrl").
 
 -export([
-    all/0,
-    init_per_suite/1,
-    end_per_suite/1
+  all/0,
+  init_per_suite/1,
+  end_per_suite/1
 ]).
 
 -export([
@@ -13,7 +13,8 @@
   test_do/1,
   test_api/1,
   test_common_errors/1,
-  test_expires/1
+  test_expires/1,
+  test_pg2_join/1
 ]).
 
 -define(KEY, list_to_binary(?MODULE_STRING ++ "_" ++ "key")).
@@ -25,7 +26,8 @@ all() -> [
   test_do,
   test_api,
   test_common_errors,
-  test_expires
+  test_expires,
+  test_pg2_join
 ].
 
 init_per_suite(Config) ->
@@ -69,10 +71,11 @@ test_api(_Config) ->
 test_expires(_Config) ->
   Pid = get_pid(),
   {error, notfound} = mcd:get(Pid, <<"a">>),
-  {ok, <<"b">>} = mcd:set(Pid, <<"a">>, <<"b">>, 0),
+  {ok, <<"b">>} = mcd:set(Pid, <<"a">>, <<"b">>, 1),
   {ok, <<"b">>} = mcd:get(Pid, <<"a">>),
   timer:sleep(1500),
-  {error, notfound} = mcd:get(Pid, <<"a">>).
+  {error, notfound} = mcd:get(Pid, <<"a">>),
+  mcd:stop(Pid).
 
 test_common_errors(_Config) ->
   Pid = get_pid(),
@@ -119,6 +122,14 @@ test_local(_Config) ->
       mcd:delete(Pid, ?KEY)
   end,
   mcd:stop(Pid).
+
+test_pg2_join(_Config) ->
+    {error, {no_such_group, test_group}} = pg2:get_members(test_group),
+    {ok, Pid} = mcd:start_link("127.0.0.1", 11211, test_group),
+    wait_connection(Pid, 10),
+    [Pid] = pg2:get_members(test_group),
+    mcd:stop(Pid),
+    [] = pg2:get_members(test_group).
 
 
 % private functions
